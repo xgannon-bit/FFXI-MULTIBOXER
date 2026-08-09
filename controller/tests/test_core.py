@@ -6,6 +6,7 @@ from ffxi_multiboxer.encounter import EncounterSession, EncounterStatus
 from ffxi_multiboxer.intents import Intent, IntentArbiter, IntentKind, ReservationBook
 from ffxi_multiboxer.ledger import CommandLedger, CommandStatus
 from ffxi_multiboxer.protocol import Message, Scope, state_message, parse_state
+from ffxi_multiboxer.providers import NativeRestProvider, RestPolicy, SuperwarpProvider, TrustProfile, TrustProvider
 from ffxi_multiboxer.state import CharacterState
 from ffxi_multiboxer.support import SupportPlanner
 from ffxi_multiboxer.travel import TravelCoordinator, TravelRequest, TravelSystem
@@ -100,6 +101,55 @@ class SupportTests(unittest.TestCase):
         planner = SupportPlanner()
         healer = CharacterState("Coughdrop", mp_percent=2)
         self.assertEqual(planner.cure_intents(healer, [CharacterState("Gannon", hp_percent=10)]), [])
+
+
+class ProviderTests(unittest.TestCase):
+    def test_superwarp_command_uses_existing_addon(self) -> None:
+        provider = SuperwarpProvider()
+        cmd = provider.command_for(
+            TravelRequest(TravelSystem.HOME_POINT, "Ru'Lude Gardens", "1", scope=Scope.ALL),
+            scope="all",
+        )
+        self.assertEqual(cmd.command, 'sw hp all "Ru\'Lude Gardens" 1')
+
+    def test_trust_profile_disables_pulling_and_mirrors_engage(self) -> None:
+        provider = TrustProvider()
+        commands = [c.command for c in provider.bootstrap_multibox(TrustProfile(main_character="Gannon"))]
+        self.assertIn("trust sendall trust set AutoPullMode Off", commands)
+        self.assertIn("trust sendall trust set AutoEngageMode Mirror", commands)
+        self.assertIn("trust sendall trust set AutoSkillchainMode Auto", commands)
+        self.assertIn("trust sendall trust set AutoMagicBurstMode Auto", commands)
+        self.assertIn("trust sendall trust set AutoRestoreManaMode Auto", commands)
+
+    def test_native_rest_starts_and_stops_only_when_safe(self) -> None:
+        provider = NativeRestProvider(RestPolicy(start_mp_percent=20, stop_mp_percent=80, minimum_idle_seconds=2))
+        start = provider.desired_action(
+            mp_percent=15,
+            engaged=False,
+            casting=False,
+            currently_resting=False,
+            idle_seconds=3,
+        )
+        self.assertIsNotNone(start)
+        self.assertEqual(start.command, "input /heal on")
+
+        self.assertIsNone(provider.desired_action(
+            mp_percent=15,
+            engaged=True,
+            casting=False,
+            currently_resting=False,
+            idle_seconds=3,
+        ))
+
+        stop = provider.desired_action(
+            mp_percent=85,
+            engaged=False,
+            casting=False,
+            currently_resting=True,
+            idle_seconds=10,
+        )
+        self.assertIsNotNone(stop)
+        self.assertEqual(stop.command, "input /heal off")
 
 
 class LedgerTests(unittest.TestCase):
