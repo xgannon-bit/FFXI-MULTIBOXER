@@ -6,7 +6,10 @@ from ffxi_multiboxer.encounter import EncounterSession, EncounterStatus
 from ffxi_multiboxer.intents import Intent, IntentArbiter, IntentKind, ReservationBook
 from ffxi_multiboxer.ledger import CommandLedger, CommandStatus
 from ffxi_multiboxer.protocol import Message, Scope, state_message, parse_state
+from ffxi_multiboxer.state import CharacterState
+from ffxi_multiboxer.support import SupportPlanner
 from ffxi_multiboxer.travel import TravelCoordinator, TravelRequest, TravelSystem
+from ffxi_multiboxer.travel_session import ParticipantStatus, TravelSession
 
 
 class ProtocolTests(unittest.TestCase):
@@ -79,6 +82,26 @@ class IntentTests(unittest.TestCase):
         self.assertEqual(arbiter.choose([second]).actor, "Blm")
 
 
+class SupportTests(unittest.TestCase):
+    def test_support_planner_prioritizes_critical_member(self) -> None:
+        planner = SupportPlanner()
+        healer = CharacterState("Coughdrop", hp_percent=100, mp_percent=80)
+        party = [
+            CharacterState("Gannon", hp_percent=24),
+            CharacterState("FriendDRG", hp_percent=55),
+        ]
+        intents = planner.cure_intents(healer, party)
+        winner = IntentArbiter().choose(intents, reserve=False)
+        self.assertIsNotNone(winner)
+        self.assertEqual(winner.target, "Gannon")
+        self.assertEqual(winner.action, "Cure IV")
+
+    def test_no_cure_when_healer_has_too_little_mp(self) -> None:
+        planner = SupportPlanner()
+        healer = CharacterState("Coughdrop", mp_percent=2)
+        self.assertEqual(planner.cure_intents(healer, [CharacterState("Gannon", hp_percent=10)]), [])
+
+
 class LedgerTests(unittest.TestCase):
     def test_ack_and_timeout(self) -> None:
         ledger = CommandLedger()
@@ -110,6 +133,16 @@ class TravelTests(unittest.TestCase):
         self.assertEqual(items[-1].character, "Gannon")
         self.assertGreater(items[1].due_at, items[0].due_at)
         self.assertGreater(items[2].due_at, items[1].due_at)
+
+    def test_session_tracks_individual_results(self) -> None:
+        session = TravelSession.create("S1", "hp", "Jeuno", ["Gannon", "Coughdrop"])
+        session.bind_command("Coughdrop", "T1")
+        session.acknowledge("Coughdrop", True)
+        session.arrived("Coughdrop")
+        session.skip("Gannon", "destination locked")
+        self.assertTrue(session.complete)
+        self.assertEqual(session.participant("Coughdrop").status, ParticipantStatus.ARRIVED)
+        self.assertEqual(session.participant("Gannon").status, ParticipantStatus.SKIPPED)
 
 
 if __name__ == "__main__":
