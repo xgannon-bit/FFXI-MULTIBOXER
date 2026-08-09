@@ -13,7 +13,7 @@ Experimental **attended** multibox orchestration for Final Fantasy XI, initially
 
 ## Hard boundaries
 
-This project is designed for an attended test environment. The normal build deliberately does **not** include autonomous claiming, pulling, AFK farming or AFK leveling loops. An encounter must be initiated/authorized by the player before combat orchestration is enabled.
+This project is designed for an attended test environment. The normal build deliberately does **not** include autonomous claiming, pulling, AFK farming or AFK leveling loops. An encounter must be manually armed and activated before the controller permits combat actions.
 
 ## Repository layout
 
@@ -21,22 +21,38 @@ This project is designed for an attended test environment. The normal build deli
 ashita/addons/xicommand/   Ashita v4 in-game agent
 controller/                Python central coordinator
   src/ffxi_multiboxer/
-docs/                      protocol and subsystem design
+docs/                      protocol, travel and roadmap docs
 ```
 
-## Current milestone: M0 + Travel foundation
+## Current state
 
-Implemented first:
+### M0 - bootstrap: complete
 
-- UDP protocol and client registry
-- acknowledgements and command IDs
-- travel command model (`hp`, `wp`, `pwp`, `sg`, etc.)
-- scopes: one character, party-local, all-local
-- staggered dispatch for menu-heavy travel
-- Ashita v4 command bridge skeleton (`/xmb ...`)
-- explicit manual encounter gate
+- Versioned wire protocol
+- controller skeleton
+- Ashita command parser
+- travel request model
+- leader-last staggered dispatch
 
-The travel subsystem is intentionally provider-based. We are reimplementing the useful ideas from Superwarp rather than coupling the whole application to Windower. The first provider will target CatsEye/Ashita menu behavior; a compatibility provider can later forward to existing server-approved travel addons.
+### M1 - core orchestration: implemented on `phase1-core`
+
+- character state model
+- online/offline registry behavior
+- attended encounter state machine
+- central intent arbitration
+- action/resource reservations
+- command ACK/timeout ledger
+- structured JSONL telemetry
+- travel session progress tracking
+- support/cure intent prototype
+- offline simulation harness
+- Python unit tests and GitHub Actions CI
+
+### M2 - Ashita transport: started
+
+The Ashita agent now has a non-blocking localhost UDP transport using LuaSocket, HELLO/heartbeat messages, controller command receiving, ACK replies, reconnect/ping diagnostics and a live TRAVEL command bridge. Travel execution is intentionally still a dry-run provider until CatsEye-specific Home Point menu behavior is implemented.
+
+See `docs/ROADMAP.md` for all milestones.
 
 ## Development setup
 
@@ -47,6 +63,8 @@ cd controller
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e .
+python -m unittest discover -s tests -v
+xmb-sim
 xmb-controller
 ```
 
@@ -61,21 +79,35 @@ then in game:
 ```text
 /addon load xicommand
 /xmb status
+/xmb ping
 ```
 
-## Initial commands
+Controller console examples:
+
+```text
+clients
+state
+leader Gannon
+travel all hp "Ru'Lude Gardens" 1
+travel char:Coughdrop sg "Valkurm Dunes"
+arm
+activate 0x12345678
+disarm
+pending
+```
+
+In-game local diagnostics:
 
 ```text
 /xmb status
-/xmb arm              -- manually authorize current encounter
-/xmb disarm
-/xmb travel all hp "Ru'Lude Gardens" 1
-/xmb travel all sg "Valkurm Dunes"
+/xmb reconnect
+/xmb ping
+/xmb travel hp "Ru'Lude Gardens" 1
 /xmb cancel
 ```
 
 ## Superwarp inspiration
 
-AkadenTK/superwarp is BSD-3-Clause licensed and is valuable prior art for FFXI travel systems. It supports Home Points, Waypoints, Proto-Waypoints, Survival Guides and many additional retail systems, including multibox IPC. XI Command uses a clean provider interface so CatsEye-specific destinations and menu flows can be supported without importing retail-only assumptions.
+AkadenTK/superwarp is BSD-3-Clause licensed and valuable prior art for FFXI travel systems. It supports Home Points, Waypoints, Proto-Waypoints, Survival Guides and many additional retail systems, including multibox IPC. XI Command uses a provider interface so CatsEye-specific destinations and menu flows can be supported without importing retail-only assumptions.
 
-See `docs/TRAVEL.md` for the design and porting plan.
+See `docs/TRAVEL.md` for the travel design and porting plan.
