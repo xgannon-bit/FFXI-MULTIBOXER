@@ -2,139 +2,145 @@
 
 ## Project principle
 
-XI Command is an attended multibox orchestration platform for CatsEyeXI/Ashita. It may automate support, movement, positioning, skillchains, magic bursts, interrupts, buffs, travel, and other explicitly approved actions while the player is present. The normal build does not contain autonomous claiming, pulling, AFK farming, or AFK leveling loops.
+XI Command is an attended multibox orchestration platform for CatsEyeXI. It should **reuse mature FFXI addons as providers instead of rebuilding solved behavior**. CatsEye supports manual Windower or Ashita clients; the primary multibox test path is now Windower because the strongest existing travel/combat automation ecosystem is there.
+
+The normal CatsEye test profile does not contain autonomous claiming, pulling, AFK farming, or AFK leveling loops.
+
+See `INTEGRATION_STRATEGY.md` for the provider model.
 
 ## Milestone M0 - Bootstrap and protocol
 Status: complete
 
 - Repository layout
 - Versioned wire protocol
-- UDP controller skeleton
-- Agent command parser
+- Controller skeleton
 - Manual encounter arm/disarm gate
 - Travel request model
 - Staggered multibox dispatch
 
-Exit criteria: controller and addon have stable message/command vocabulary.
-
 ## Milestone M1 - Core orchestration engine
+Status: complete enough for provider integration
+
+- Character registry/state model
+- Encounter session state machine
+- Manual authorization gate
+- Intent model and arbitration
+- Resource reservations
+- Command ledger with ACK/timeout tracking
+- Travel sessions
+- Telemetry/event log
+- Offline simulation harness and tests
+
+## Milestone M2 - Existing-addon integration layer
 Status: in progress
 
-Goal: make the desktop controller independently testable before live game integration.
+Goal: get a powerful playable multibox system quickly by controlling proven addons.
+
+### Superwarp provider
+- Delegate Home Points, Survival Guides, Waypoints, Proto-Waypoints and other supported travel to separately-installed Superwarp.
+- XI Command owns scopes, travel sessions, retries, telemetry and regrouping; Superwarp owns the actual FFXI menu/warp implementation.
+
+### Trust provider
+- Treat `cyritegamestudios/trust` as an external dependency; do not vendor or derive from its source without written permission from its author.
+- Apply documented Trust modes/commands for:
+  - follow and assist
+  - mirrored engage state
+  - job automation
+  - healing/status removal
+  - songs/rolls
+  - automatic skillchains
+  - automatic magic bursts
+  - MP restoration
+- Hard-disable AutoPullMode in the CatsEye profile.
+
+### Native micro-providers
+Only implement missing glue:
+- classic `/heal` auto-rest policy between fights
+- encounter authorization
+- provider state/profile coordination
+- post-zone follow recovery
+- diagnostics
+
+Exit criteria: one command configures two alts to follow/assist the main, mirror main engagement, SC/MB according to job, recover MP, and use Superwarp for synchronized travel.
+
+## Milestone M3 - Windower XI Command bridge
+
+Goal: thin per-client bridge between XI Command and existing providers.
 
 Features:
-- Character registry with online/offline timeout
-- Structured character state model
-- Encounter session state machine
-- Hard manual authorization gate
-- Intent model and arbitration
-- Resource reservation to prevent duplicate cure/stun/WS actions
-- Command ledger with ACK/timeout tracking
-- Travel sessions with per-character progress
-- Structured telemetry/event log
-- Simulation harness and unit tests
+- one small Windower addon per FFXI process
+- state heartbeat: HP/MP/TP/zone/status/target/position
+- execute provider commands locally
+- Windower IPC discovery/broadcast
+- command ACK/result reporting
+- provider availability detection (`trust`, `superwarp`, optional addons)
+- reconnect/re-register after zoning
 
-Exit criteria:
-- Two or more simulated agents can register and update state.
-- Controller blocks combat commands while disarmed.
-- Competing intents select one deterministic winner.
-- Reservations prevent duplicate actions.
-- Travel session tracks queued/sent/acked/failed participants.
-- All pure-Python tests pass without FFXI installed.
+Exit criteria: two live Windower/CatsEye clients appear in XI Command and report which providers are installed.
 
-## Milestone M2 - Ashita transport and live telemetry
-Goal: connect real CatsEye clients to the tested controller.
+## Milestone M4 - Playable multibox profile
 
-Features:
-- Ashita UDP transport
-- HELLO/heartbeat/state publishing
-- CMD receive + ACK result reporting
-- Character HP/MP/TP/zone/target/position state
-- Local command execution adapter
-- Developer HUD and transport diagnostics
-- Reconnect/re-register behavior after zoning
+Goal: make the common tank + alt(s) workflow work end-to-end.
 
-Exit criteria: two live CatsEye clients appear in the controller and accept safe diagnostic commands.
+Default behavior:
+- main is manually controlled
+- alts follow main
+- alts assist main
+- alts engage only after/mirroring main engagement
+- pulling/independent target acquisition disabled
+- melee jobs automatically skillchain when configured
+- mage jobs automatically magic burst when configured
+- support jobs use Trust role logic
+- MP jobs rest between fights when configured
+- all local characters warp through Superwarp
+- post-zone follow automatically resumes
 
-## Milestone M3 - Superwarp travel provider
-Goal: synchronized multi-character travel.
+Exit criteria: normal attended leveling/adventuring loop works without manually swapping windows for routine alt actions.
 
-Features:
-- Home Point provider
-- Survival Guide provider
-- Waypoint / Proto-Waypoint provider where CatsEye supports them
-- Destination aliases and fuzzy resolver
-- Per-character unlock/preflight results
-- leader-last dispatch
-- arrival detection and regroup status
-- cancel/retry handling
-- smart travel command based on nearby valid travel NPC
+## Milestone M5 - Safety and coordination layer
 
-Exit criteria: one command moves all selected local characters through an approved travel system and verifies arrival.
+- provider-aware start/stop emergency button
+- explicit combat-active gate
+- target ownership checks
+- duplicate command suppression
+- per-role action locks where Trust does not already coordinate them
+- combat ends -> disengage/recover/rest/follow state
+- travel cancels combat behaviors before menu interactions
 
-## Milestone M4 - Formation and movement engine
-Goal: make boxes position themselves intelligently after the player initiates an encounter.
+## Milestone M6 - Advanced combat additions
 
-Features:
-- Follow / hold / regroup
-- role distance bands
-- tank/front, melee/rear, healer/ranged anchors
-- formation templates: stack, line, spread, boss
-- movement deadband to prevent jitter
-- stuck detection and recovery
-- post-zone regroup
+Only build features not already satisfactory in Trust or another approved dependency:
+- cross-character stun rotation
+- custom skillchain plan override
+- burst reservations across multiple mages
+- encounter-specific positioning
+- rear/flank formation corrections
+- role-specific hold distances
+- boss reaction profiles
 
-Exit criteria: boxes maintain assigned relative positions through a normal fight without oscillation.
+Do not rewrite Trust's full 22-job logic unless there is a concrete CatsEye compatibility gap.
 
-## Milestone M5 - Support AI
-Goal: useful RDM/WHM/BRD/COR support automation.
-
-Features:
-- cure scoring
-- status removal
-- haste/refresh/buff uptime
-- dispel/debuff logic
-- MP conservation
-- spell/JA recast checks
-- emergency priorities
-- centralized heal arbitration
-
-Exit criteria: support boxes act without duplicate cures or conflicting actions.
-
-## Milestone M6 - Combat coordinator
-Goal: party-level coordination rather than independent bots.
-
-Features:
-- TP reservation
-- weaponskill planner
-- automatic skillchain execution
-- magic burst timing
-- stun/interrupt rotation
-- duplicate-action suppression
-- role-aware target synchronization
-
-Exit criteria: three-character simulated party executes a deterministic SC+MB and interrupt rotation.
-
-## Milestone M7 - Encounter profiles and UI
+## Milestone M7 - Dashboard and profile editor
 
 - PySide6 dashboard
-- role editor
-- encounter profiles
-- visual priority/behavior editor
-- live intent queue
+- provider status per character
+- role presets
+- enable/disable modes by job
+- travel controls
+- emergency stop
+- live target/engage/follow state
 - action history
-- warnings and emergency controls
 
 ## Milestone M8 - Analytics and replay
 
-- SQLite combat telemetry
+- SQLite telemetry
 - buff/debuff uptime
 - healing/overheal analysis
-- interrupt response time
-- skillchain timing quality
+- interrupt timing
+- skillchain timing
+- travel failures
 - replay timeline
-- offline profile tuning
 
-## Development order
+## Development rule
 
-Work vertically: each milestone must leave XI Command more usable than before. Core logic remains deterministic and unit-testable. Game-specific code is isolated behind adapters/providers so CatsEye menu and packet details do not contaminate the decision engine.
+Before implementing a game mechanic, check whether a mature addon already solves it. If yes, prefer a provider/adapter. XI Command should become the **orchestrator and UX layer**, not a collection of rewritten FFXI addons.
