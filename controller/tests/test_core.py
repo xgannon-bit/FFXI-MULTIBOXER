@@ -1,0 +1,199 @@
+from __future__ import annotations
+
+import unittest
+
+from ffxi_multiboxer.encounter import EncounterSession, EncounterStatus
+from ffxi_multiboxer.intents import Intent, IntentArbiter, IntentKind, ReservationBook
+from ffxi_multiboxer.ledger import CommandLedger, CommandStatus
+from ffxi_multiboxer.protocol import Message, Scope, state_message, parse_state
+from ffxi_multiboxer.providers import NativeRestProvider, RestPolicy, SuperwarpProvider, TrustProfile, TrustProvider
+from ffxi_multiboxer.state import CharacterState
+from ffxi_multiboxer.support import SupportPlanner
+from ffxi_multiboxer.travel import TravelCoordinator, TravelRequest, TravelSystem
+from ffxi_multiboxer.travel_session import ParticipantStatus, TravelSession
+
+
+class ProtocolTests(unittest.TestCase):
+    def test_escape_roundtrip(self) -> None:
+        original = Message.decode(b"1|EVENT|Gannon|NOTE|a\\pb\\nline\\\\tail\n")
+        encoded = original.encode()
+        decoded = Message.decode(encoded)
+        self.assertEqual(decoded, original)
+
+    def test_state_roundtrip(self) -> None:
+        msg = state_message(
+            "Gannon",
+            zone="Ru'Lude Gardens",
+            hp_percent=87,
+            mp_percent=42,
+            tp=1234,
+            target_id=1001,
+            engaged=True,
+            casting=False,
+            x=1.25,
+            y=-3.5,
+            z=0.75,
+            heading=1.2,
+            buffs=(33, 580),
+        )
+        decoded = Message.decode(msg.encode())
+        state = parse_state(decoded)
+        self.assertEqual(state["character"], "Gannon")
+        self.assertEqual(state["tp"], 1234)
+        self.assertEqual(state["buffs"], frozenset({33, 580}))
+        self.assertTrue(state["engaged"])
+
+
+class EncounterTests(unittest.TestCase):
+    def test_manual_gate(self) -> None:
+        encounter = EncounterSession()
+        self.assertFalse(encounter.permits_combat_action())
+        encounter.arm()
+        self.assertEqual(encounter.status, EncounterStatus.ARMED)
+        self.assertFalse(encounter.permits_combat_action())
+        encounter.activate(123)
+        self.assertTrue(encounter.permits_combat_action(123))
+        self.assertFalse(encounter.permits_combat_action(124))
+        encounter.disarm()
+        self.assertFalse(encounter.permits_combat_action(123))
+
+    def test_cannot_activate_without_arm(self) -> None:
+        with self.assertRaises(RuntimeError):
+            EncounterSession().activate(123)
+
+
+class IntentTests(unittest.TestCase):
+    def test_highest_score_wins(self) -> None:
+        arbiter = IntentArbiter()
+        winner = arbiter.choose([
+            Intent("Rdm", IntentKind.CURE, "Cure III", target="Gannon", score=50),
+            Intent("Whm", IntentKind.CURE, "Cure V", target="Gannon", score=90),
+        ])
+        self.assertIsNotNone(winner)
+        self.assertEqual(winner.actor, "Whm")
+
+    def test_reservation_prevents_duplicate(self) -> None:
+        book = ReservationBook()
+        arbiter = IntentArbiter(book)
+        first = Intent("Rdm", IntentKind.STUN, "Stun", target_id=700, score=100)
+        second = Intent("Blm", IntentKind.STUN, "Stun", target_id=700, score=90)
+        self.assertEqual(arbiter.choose([first, second]).actor, "Rdm")
+        self.assertIsNone(arbiter.choose([second]))
+        self.assertTrue(book.release(first.reservation_key(), owner="Rdm"))
+        self.assertEqual(arbiter.choose([second]).actor, "Blm")
+
+
+class SupportTests(unittest.TestCase):
+    def test_support_planner_prioritizes_critical_member(self) -> None:
+        planner = SupportPlanner()
+        healer = CharacterState("Coughdrop", hp_percent=100, mp_percent=80)
+        party = [
+            CharacterState("Gannon", hp_percent=24),
+            CharacterState("FriendDRG", hp_percent=55),
+        ]
+        intents = planner.cure_intents(healer, party)
+        winner = IntentArbiter().choose(intents, reserve=False)
+        self.assertIsNotNone(winner)
+        self.assertEqual(winner.target, "Gannon")
+        self.assertEqual(winner.action, "Cure IV")
+
+    def test_no_cure_when_healer_has_too_little_mp(self) -> None:
+        planner = SupportPlanner()
+        healer = CharacterState("Coughdrop", mp_percent=2)
+        self.assertEqual(planner.cure_intents(healer, [CharacterState("Gannon", hp_percent=10)]), [])
+
+
+class ProviderTests(unittest.TestCase):
+    def test_superwarp_command_uses_existing_addon(self) -> None:
+        provider = SuperwarpProvider()
+        cmd = provider.command_for(
+            TravelRequest(TravelSystem.HOME_POINT, "Ru'Lude Gardens", "1", scope=Scope.ALL),
+            scope="all",
+        )
+        self.assertEqual(cmd.command, 'sw hp all "Ru\'Lude Gardens" 1')
+
+    def test_trust_profile_disables_pulling_and_mirrors_engage(self) -> None:
+        provider = TrustProvider()
+        commands = [c.command for c in provider.bootstrap_multibox(TrustProfile(main_character="Gannon"))]
+        self.assertIn("trust sendall trust set AutoPullMode Off", commands)
+        self.assertIn("trust sendall trust set AutoEngageMode Mirror", commands)
+        self.assertIn("trust sendall trust set AutoSkillchainMode Auto", commands)
+        self.assertIn("trust sendall trust set AutoMagicBurstMode Auto", commands)
+        self.assertIn("trust sendall trust set AutoRestoreManaMode Auto", commands)
+
+    def test_native_rest_starts_and_stops_only_when_safe(self) -> None:
+        provider = NativeRestProvider(RestPolicy(start_mp_percent=20, stop_mp_percent=80, minimum_idle_seconds=2))
+        start = provider.desired_action(
+            mp_percent=15,
+            engaged=False,
+            casting=False,
+            currently_resting=False,
+            idle_seconds=3,
+        )
+        self.assertIsNotNone(start)
+        self.assertEqual(start.command, "input /heal on")
+
+        self.assertIsNone(provider.desired_action(
+            mp_percent=15,
+            engaged=True,
+            casting=False,
+            currently_resting=False,
+            idle_seconds=3,
+        ))
+
+        stop = provider.desired_action(
+            mp_percent=85,
+            engaged=False,
+            casting=False,
+            currently_resting=True,
+            idle_seconds=10,
+        )
+        self.assertIsNotNone(stop)
+        self.assertEqual(stop.command, "input /heal off")
+
+
+class LedgerTests(unittest.TestCase):
+    def test_ack_and_timeout(self) -> None:
+        ledger = CommandLedger()
+        rec = ledger.create("C1", "Gannon", "CAST")
+        ledger.sent("C1")
+        ledger.finish("C1", "OK", "done")
+        self.assertEqual(rec.status, CommandStatus.ACKED)
+
+        rec2 = ledger.create("C2", "Coughdrop", "TRAVEL")
+        ledger.sent("C2")
+        rec2.sent_at = 1.0
+        expired = ledger.expire(5.0, now=10.0)
+        self.assertEqual(expired[0].status, CommandStatus.TIMED_OUT)
+
+
+class TravelTests(unittest.TestCase):
+    def test_leader_is_dispatched_last(self) -> None:
+        coordinator = TravelCoordinator(stagger_seconds=0.30)
+        request = TravelRequest(TravelSystem.HOME_POINT, "Jeuno", scope=Scope.ALL)
+        items = coordinator.build_dispatches(
+            request,
+            [
+                ("Gannon", ("127.0.0.1", 1001)),
+                ("Coughdrop", ("127.0.0.1", 1002)),
+                ("Bardbox", ("127.0.0.1", 1003)),
+            ],
+            leader="Gannon",
+        )
+        self.assertEqual(items[-1].character, "Gannon")
+        self.assertGreater(items[1].due_at, items[0].due_at)
+        self.assertGreater(items[2].due_at, items[1].due_at)
+
+    def test_session_tracks_individual_results(self) -> None:
+        session = TravelSession.create("S1", "hp", "Jeuno", ["Gannon", "Coughdrop"])
+        session.bind_command("Coughdrop", "T1")
+        session.acknowledge("Coughdrop", True)
+        session.arrived("Coughdrop")
+        session.skip("Gannon", "destination locked")
+        self.assertTrue(session.complete)
+        self.assertEqual(session.participant("Coughdrop").status, ParticipantStatus.ARRIVED)
+        self.assertEqual(session.participant("Gannon").status, ParticipantStatus.SKIPPED)
+
+
+if __name__ == "__main__":
+    unittest.main()
